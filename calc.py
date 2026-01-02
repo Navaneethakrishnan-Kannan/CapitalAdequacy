@@ -2,241 +2,214 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import random
 
 st.set_page_config(layout="wide", page_title="Retirement Capital Adequacy Calculator")
 
-# ============================================================
-# MONTE CARLO ENGINE (FULL PORT)
-# ============================================================
-def run_simulation(initial_capital, p, sims=2000, track=True):
-    mi = p["monthly_income"]
-    infl = p["inflation"] / 100
-    xirr = p["xirr"] / 100
-    vol = p["vol"] / 100
-    eq_pct = p["equity_pct"] / 100
-    arb_ret = p["arb_ret"] / 100
-    years = p["years"]
-    age0 = p["age"]
-    ht = p["harvest_threshold"] / 100
-    hr = p["harvest_rate"] / 100
-
-    months = years * 12
-    arb_m = (1 + arb_ret) ** (1 / 12) - 1
-
-    log_mu = np.log(1 + xirr) / 12
-    sigma = vol / np.sqrt(12)
-
-    successes = 0
-    terminals = []
-    income_paths = []
-    corpus_paths = []
-
-    for _ in range(sims):
-        equity = initial_capital * eq_pct
-        arb = initial_capital * (1 - eq_pct)
-        wd = mi
-        annual_tracker = 1.0
-
-        inc_path = []
-        cor_path = []
-
-        failed = False
-
-        for m in range(1, months + 1):
-            z = np.random.normal()
-            r = np.exp(log_mu + sigma * z) - 1
-
-            equity *= (1 + r)
-            annual_tracker *= (1 + r)
-            arb *= (1 + arb_m)
-
-            if arb >= wd:
-                arb -= wd
-            else:
-                equity -= (wd - arb)
-                arb = 0
-
-            if equity + arb <= 0:
-                failed = True
-                break
-
-            if m % 12 == 0:
-                wd *= (1 + infl)
-                y = m // 12
-
-                if annual_tracker - 1 > ht:
-                    tr = equity * hr
-                    equity -= tr
-                    arb += tr
-
-                inc_path.append({
-                    "year": y,
-                    "age": age0 + y,
-                    "monthly": wd
-                })
-
-                cor_path.append({
-                    "year": y,
-                    "age": age0 + y,
-                    "equity": equity,
-                    "arb": arb,
-                    "total": equity + arb
-                })
-
-                annual_tracker = 1.0
-
-        if not failed:
-            successes += 1
-            terminals.append(equity + arb)
-            income_paths.append(inc_path)
-            corpus_paths.append(cor_path)
-        else:
-            terminals.append(0)
-
-    terminals = np.array(terminals)
-    valid = terminals[terminals > 0]
-
-    return {
-        "confidence": successes / sims * 100,
-        "p25": np.percentile(valid, 25) if len(valid) else 0,
-        "p50": np.percentile(valid, 50) if len(valid) else 0,
-        "p75": np.percentile(valid, 75) if len(valid) else 0,
-        "income": income_paths,
-        "corpus": corpus_paths
-    }
-
-# ============================================================
-# SIDEBAR INPUTS
-# ============================================================
-st.sidebar.header("Inputs")
-
-params = {
-    "monthly_income": st.sidebar.number_input("Monthly Income (₹)", 10000, 500000, 50000, 5000),
-    "inflation": st.sidebar.number_input("Inflation (%)", 0.0, 8.0, 4.0, 0.1),
-    "xirr": st.sidebar.number_input("Equity XIRR (%)", 6.0, 15.0, 12.0, 0.1),
-    "vol": st.sidebar.number_input("Equity Volatility (%)", 5.0, 30.0, 15.0, 0.5),
-    "equity_pct": st.sidebar.slider("Equity Allocation (%)", 0, 100, 70),
-    "arb_ret": st.sidebar.number_input("Arbitrage Return (% p.a.)", 4.0, 9.0, 7.0, 0.1),
-    "harvest_threshold": st.sidebar.number_input("Harvest Threshold (%)", 5.0, 15.0, 10.0, 0.5),
-    "harvest_rate": st.sidebar.number_input("Harvest Rate (%)", 2.0, 15.0, 5.0, 0.5),
-    "years": st.sidebar.number_input("Horizon (Years)", 20, 60, 40),
-    "age": st.sidebar.number_input("Starting Age", 40, 70, 60),
-    "target_conf": st.sidebar.slider("Target Confidence (%)", 70, 99, 90)
-}
-
-# ============================================================
-# MAIN CALCULATION
-# ============================================================
 st.title("Retirement Capital Adequacy Calculator")
 
-if st.button("Run Monte Carlo Simulation"):
-    with st.spinner("Running simulations..."):
+# --- Inputs ---
+st.sidebar.header("User Inputs")
 
-        caps = np.linspace(
-            params["monthly_income"] * 100,
-            params["monthly_income"] * 400,
-            15
-        )
+monthly_income = st.sidebar.number_input("Monthly Income Required (₹)", value=50000, step=5000)
+inflation = st.sidebar.number_input("Annual Inflation (%)", value=4.0, step=0.5)
+target_xirr = st.sidebar.number_input("Target Equity XIRR (%)", value=12.0, step=0.5)
+volatility = st.sidebar.number_input("Equity Volatility (%)", value=15.0, step=0.5)
+equity_pct = st.sidebar.number_input("Equity Allocation (%)", value=70, step=5)
+arbitrage_return = st.sidebar.number_input("Arbitrage Fund Return (% p.a.)", value=7.0, step=0.5)
+horizon_years = st.sidebar.number_input("Time Horizon (Years)", value=40, step=1)
+starting_age = st.sidebar.number_input("Starting Age", value=60, step=1)
+target_confidence = st.sidebar.number_input("Target Confidence Level (%)", value=90, step=1)
+harvest_threshold = st.sidebar.number_input("Harvest Threshold (%)", value=10.0, step=1)
+harvest_rate = st.sidebar.number_input("Harvest Rate (%)", value=5.0, step=1)
 
-        curve = []
-        for c in caps:
-            res = run_simulation(c, params, sims=1000, track=False)
-            curve.append((c / 1e7, res["confidence"]))
+# --- Monte Carlo Simulation Function ---
+def run_simulation(initial_capital, params, num_sims=2000, track_income=False, track_corpus=False):
+    monthly_income, inflation, target_xirr, volatility, equity_pct, arbitrage_return, horizon_years, starting_age, harvest_threshold, harvest_rate = params
+    inflation_annual = inflation / 100
+    target_xirr_annual = target_xirr / 100
+    volatility_annual = volatility / 100
+    equity_allocation = equity_pct / 100
+    arbitrage_return_annual = arbitrage_return / 100
+    arbitrage_return_monthly = (1 + arbitrage_return_annual)**(1/12) - 1
+    horizon_months = horizon_years * 12
 
-        curve_df = pd.DataFrame(curve, columns=["Capital (Cr)", "Confidence"])
+    log_monthly_target = np.log(1 + target_xirr_annual) / 12
+    monthly_vol = volatility_annual / np.sqrt(12)
+    harvest_threshold_decimal = harvest_threshold / 100
+    harvest_rate_decimal = harvest_rate / 100
 
-        # Interpolate required capital
-        req = None
-        for i in range(len(curve_df) - 1):
-            if curve_df.iloc[i]["Confidence"] <= params["target_conf"] <= curve_df.iloc[i+1]["Confidence"]:
-                x1, y1 = curve_df.iloc[i]
-                x2, y2 = curve_df.iloc[i+1]
-                req = x1 + (params["target_conf"] - y1) * (x2 - x1) / (y2 - y1)
+    success_count = 0
+    terminal_values = []
+    income_projections = []
+    corpus_projections = []
+
+    for sim in range(num_sims):
+        equity = initial_capital * equity_allocation
+        arbitrage = initial_capital * (1 - equity_allocation)
+        current_withdrawal = monthly_income
+        portfolio_failed = False
+        annual_equity_tracker = 1.0
+        sim_income_tracker = []
+        sim_corpus_tracker = []
+
+        if track_income:
+            sim_income_tracker.append({'year':0, 'age':starting_age, 'monthly_income':current_withdrawal, 'annual_income':current_withdrawal*12})
+        if track_corpus:
+            sim_corpus_tracker.append({'year':0, 'age':starting_age, 'equity':equity, 'arbitrage':arbitrage, 'total':equity+arbitrage})
+
+        for month in range(1, horizon_months + 1):
+            # Log-normal equity return
+            normal_random = np.random.normal()
+            m_ret = np.exp(log_monthly_target + monthly_vol * normal_random) - 1
+            equity *= (1 + m_ret)
+            annual_equity_tracker *= (1 + m_ret)
+
+            # Arbitrage growth
+            arbitrage *= (1 + arbitrage_return_monthly)
+
+            # Withdrawal
+            if arbitrage >= current_withdrawal:
+                arbitrage -= current_withdrawal
+            else:
+                shortfall = current_withdrawal - arbitrage
+                arbitrage = 0
+                equity -= shortfall
+
+            if equity + arbitrage <= 0:
+                portfolio_failed = True
                 break
 
-        st.subheader("Required Capital")
-        st.success(f"₹ {req:.2f} Crores")
+            # Annual updates
+            if month % 12 == 0:
+                current_withdrawal *= (1 + inflation_annual)
+                if track_income:
+                    sim_income_tracker.append({'year':month//12, 'age':starting_age+month//12, 'monthly_income':current_withdrawal, 'annual_income':current_withdrawal*12})
+                if track_corpus:
+                    sim_corpus_tracker.append({'year':month//12, 'age':starting_age+month//12, 'equity':equity, 'arbitrage':arbitrage, 'total':equity+arbitrage})
 
-        detail = run_simulation(req * 1e7, params, sims=2000)
+                # Harvest
+                actual_annual_return = annual_equity_tracker - 1
+                if actual_annual_return > harvest_threshold_decimal:
+                    transfer_amt = equity * harvest_rate_decimal
+                    equity -= transfer_amt
+                    arbitrage += transfer_amt
+                annual_equity_tracker = 1.0
 
-# ============================================================
-# GRAPH 1: CAPITAL VS CONFIDENCE
-# ============================================================
-        st.subheader("Capital vs Confidence")
-        fig, ax = plt.subplots()
-        ax.plot(curve_df["Capital (Cr)"], curve_df["Confidence"], marker="o")
-        ax.axhline(params["target_conf"], linestyle="--")
-        ax.set_xlabel("Capital (₹ Cr)")
-        ax.set_ylabel("Confidence (%)")
-        st.pyplot(fig)
+        if not portfolio_failed:
+            success_count += 1
+            terminal_values.append(equity + arbitrage)
+            if track_income:
+                income_projections.append(sim_income_tracker)
+            if track_corpus:
+                corpus_projections.append(sim_corpus_tracker)
+        else:
+            terminal_values.append(0)
 
-# ============================================================
-# GRAPH 2: CORPUS EVOLUTION (PATHS + PERCENTILES)
-# ============================================================
-        years = list(range(1, params["years"] + 1))
-        totals = {y: [] for y in years}
+    confidence_level = (success_count / num_sims) * 100
+    successful_values = sorted([v for v in terminal_values if v > 0])
+    p25 = successful_values[int(len(successful_values)*0.25)] if successful_values else 0
+    p50 = successful_values[int(len(successful_values)*0.50)] if successful_values else 0
+    p75 = successful_values[int(len(successful_values)*0.75)] if successful_values else 0
 
-        for sim in detail["corpus"]:
-            for r in sim:
-                totals[r["year"]].append(r["total"] / 1e7)
+    return {
+        'confidence_level': confidence_level,
+        'terminal_values': {'p25':p25, 'p50':p50, 'p75':p75},
+        'income_projections': income_projections,
+        'corpus_projections': corpus_projections
+    }
 
-        p25 = [np.percentile(totals[y], 25) for y in years]
-        p50 = [np.percentile(totals[y], 50) for y in years]
-        p75 = [np.percentile(totals[y], 75) for y in years]
+# --- Capital Adequacy Search ---
+if st.button("Run Simulation"):
+    st.info("Running Monte Carlo simulation... this may take a few seconds.")
 
-        fig, ax = plt.subplots(figsize=(10, 5))
+    params = (monthly_income, inflation, target_xirr, volatility, equity_pct, arbitrage_return, horizon_years, starting_age, harvest_threshold, harvest_rate)
 
-        sample = random.sample(detail["corpus"], 5)
-        for s in sample:
-            ax.plot([r["year"] for r in s], [r["total"] / 1e7 for r in s], color="gray", alpha=0.4)
+    # Search range for required capital
+    min_capital = monthly_income * 100
+    max_capital = monthly_income * 400
+    steps = 15
+    capital_range = []
 
-        ax.plot(years, p50, label="Median", linewidth=3)
-        ax.plot(years, p25, linestyle="--", label="25th %ile")
-        ax.plot(years, p75, linestyle="--", label="75th %ile")
-        ax.set_xlabel("Years")
-        ax.set_ylabel("Corpus (₹ Cr)")
-        ax.legend()
-        st.pyplot(fig)
+    for i in range(steps+1):
+        capital = min_capital + (max_capital - min_capital) * (i / steps)
+        sim_result = run_simulation(capital, params, num_sims=500)
+        capital_range.append({'Capital':capital/1e7, 'Confidence':sim_result['confidence_level'], 'TerminalP50':sim_result['terminal_values']['p50']/1e7})
 
-# ============================================================
-# GRAPH 3: EQUITY VS ARBITRAGE (MEDIAN)
-# ============================================================
-        eq_med = []
-        arb_med = []
+    curve_df = pd.DataFrame(capital_range)
 
-        for y in years:
-            eq_vals, arb_vals = [], []
-            for sim in detail["corpus"]:
-                for r in sim:
-                    if r["year"] == y:
-                        eq_vals.append(r["equity"] / 1e7)
-                        arb_vals.append(r["arb"] / 1e7)
-            eq_med.append(np.percentile(eq_vals, 50))
-            arb_med.append(np.percentile(arb_vals, 50))
+    # Interpolate required capital
+    req_capital = None
+    for i in range(len(curve_df)-1):
+        curr = curve_df.iloc[i]
+        next_ = curve_df.iloc[i+1]
+        if curr['Confidence'] <= target_confidence <= next_['Confidence']:
+            ratio = (target_confidence - curr['Confidence']) / (next_['Confidence'] - curr['Confidence'])
+            req_capital = curr['Capital'] + ratio * (next_['Capital'] - curr['Capital'])
+            break
 
-        fig, ax = plt.subplots()
-        ax.plot(years, eq_med, label="Equity")
-        ax.plot(years, arb_med, label="Arbitrage")
-        ax.set_xlabel("Years")
-        ax.set_ylabel("Corpus (₹ Cr)")
-        ax.legend()
-        st.pyplot(fig)
+    st.success(f"Required Capital: ₹ {req_capital:.2f} Crores" if req_capital else "Required capital not found in range.")
 
-# ============================================================
-# GRAPH 4: MONTHLY INCOME PROJECTION
-# ============================================================
-        income_med = []
-        for y in years:
-            vals = []
-            for sim in detail["income"]:
-                for r in sim:
-                    if r["year"] == y:
-                        vals.append(r["monthly"])
-            income_med.append(np.mean(vals))
+    # Detailed simulation at required capital
+    if req_capital:
+        detailed = run_simulation(req_capital*1e7, params, num_sims=1000, track_income=True, track_corpus=True)
 
-        fig, ax = plt.subplots()
-        ax.plot(years, income_med)
-        ax.set_xlabel("Years")
-        ax.set_ylabel("Monthly Income (₹)")
-        st.pyplot(fig)
+        # Process data for plots
+        years = np.arange(0, horizon_years+1)
+        # Median total
+        total_median = [np.median([sim[y]['total']/1e7 for sim in detailed['corpus_projections'] if len(sim)>y]) for y in years]
+        equity_median = [np.median([sim[y]['equity']/1e7 for sim in detailed['corpus_projections'] if len(sim)>y]) for y in years]
+        arb_median = [np.median([sim[y]['arbitrage']/1e7 for sim in detailed['corpus_projections'] if len(sim)>y]) for y in years]
+        # Income
+        monthly_income_series = [np.mean([sim[y]['monthly_income'] for sim in detailed['income_projections'] if len(sim)>y]) for y in years]
+
+        FIG_W, FIG_H = 5, 3.5
+
+        # --- Layout: 2x2 Grid ---
+        col1, col2 = st.columns(2)
+        col3, col4 = st.columns(2)
+
+        # Plot 1: Confidence vs Capital
+        with col1:
+            fig1, ax1 = plt.subplots(figsize=(FIG_W, FIG_H))
+            ax1.plot(curve_df["Capital"], curve_df["Confidence"], marker='o')
+            ax1.axhline(target_confidence, color='r', linestyle='--', label=f"{target_confidence}% Target")
+            ax1.set_xlabel("Capital (₹ Cr)")
+            ax1.set_ylabel("Confidence (%)")
+            ax1.set_title("Confidence vs Capital")
+            ax1.legend()
+            plt.tight_layout()
+            st.pyplot(fig1)
+
+        # Plot 2: Portfolio Total Corpus
+        with col2:
+            fig2, ax2 = plt.subplots(figsize=(FIG_W, FIG_H))
+            ax2.plot(starting_age + years, total_median, color='purple', linewidth=2, label='Median Total Corpus')
+            ax2.set_xlabel("Age")
+            ax2.set_ylabel("Corpus (₹ Cr)")
+            ax2.set_title("Median Portfolio Total Corpus")
+            ax2.legend()
+            plt.tight_layout()
+            st.pyplot(fig2)
+
+        # Plot 3: Equity vs Arbitrage
+        with col3:
+            fig3, ax3 = plt.subplots(figsize=(FIG_W, FIG_H))
+            ax3.plot(starting_age + years, equity_median, color='blue', label='Equity (Median)')
+            ax3.plot(starting_age + years, arb_median, color='green', label='Arbitrage (Median)')
+            ax3.set_xlabel("Age")
+            ax3.set_ylabel("Corpus (₹ Cr)")
+            ax3.set_title("Equity vs Arbitrage Corpus")
+            ax3.legend()
+            plt.tight_layout()
+            st.pyplot(fig3)
+
+        # Plot 4: Monthly Income Projection
+        with col4:
+            fig4, ax4 = plt.subplots(figsize=(FIG_W, FIG_H))
+            ax4.plot(starting_age + years, monthly_income_series, color='teal', label='Monthly Income')
+            ax4.set_xlabel("Age")
+            ax4.set_ylabel("Monthly Income (₹)")
+            ax4.set_title("Inflation-Adjusted Monthly Income")
+            ax4.legend()
+            plt.tight_layout()
+            st.pyplot(fig4)
