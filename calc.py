@@ -120,7 +120,7 @@ def run_simulation(initial_capital, params, num_sims=2000, track_income=False, t
 
 # --- Capital Adequacy Search ---
 if st.button("Run Simulation"):
-    st.info("Running Monte Carlo simulation... this may take a few seconds.")
+    st.info("Running simulation... this may take a few seconds.")
 
     params = (monthly_income, inflation, target_xirr, volatility, equity_pct, arbitrage_return, horizon_years, starting_age, harvest_threshold, harvest_rate)
 
@@ -162,7 +162,7 @@ if st.button("Run Simulation"):
         # Income
         monthly_income_series = [np.mean([sim[y]['monthly_income'] for sim in detailed['income_projections'] if len(sim)>y]) for y in years]
 
-        FIG_W, FIG_H = 5, 3.5
+        FIG_W, FIG_H = 2, 2
 
         # --- Layout: 2x2 Grid ---
         col1, col2 = st.columns(2)
