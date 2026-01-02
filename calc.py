@@ -118,8 +118,8 @@ def run_simulation(initial_capital, params, num_sims=2000, track_income=False, t
 # -------------------------
 # Calculate Required Capital
 # -------------------------
-if st.button("Calculate Required Capital"):
-    st.info("Running Monte Carlo simulation, please wait...")
+if st.button("Run Simulation"):
+    st.info("Running Simulation, please wait...")
     params = (monthly_income, inflation, target_xirr, volatility, equity_pct, arbitrage_return, horizon_years, starting_age, harvest_threshold, harvest_rate)
 
     # Capital sweep to find required capital
