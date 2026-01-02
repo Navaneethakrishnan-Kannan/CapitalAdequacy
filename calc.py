@@ -3,209 +3,153 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-st.set_page_config(layout="wide", page_title="Retirement Capital Adequacy Calculator")
+st.set_page_config(layout="wide")
 
-st.title("Retirement Capital Adequacy Calculator")
+# ----------------------------
+# Inputs
+# ----------------------------
+st.sidebar.header("Retirement Inputs")
+monthly_income = st.sidebar.number_input("Monthly Income Required (₹)", value=50000)
+inflation = st.sidebar.number_input("Annual Inflation (%)", value=4.0)
+target_xirr = st.sidebar.number_input("Target Equity XIRR (%)", value=12.0)
+volatility = st.sidebar.number_input("Equity Volatility (%)", value=15.0)
+equity_pct = st.sidebar.number_input("Equity Allocation (%)", value=70)
+arbitrage_return = st.sidebar.number_input("Arbitrage Fund Return (% p.a.)", value=7.0)
+horizon_years = st.sidebar.number_input("Time Horizon (Years)", value=40)
+starting_age = st.sidebar.number_input("Starting Age", value=60)
+target_conf = st.sidebar.number_input("Target Confidence Level (%)", value=90)
+harvest_threshold = st.sidebar.number_input("Harvest Threshold (%)", value=10.0)
+harvest_rate = st.sidebar.number_input("Harvest Rate (%)", value=5.0)
 
-# -------------------------
-# Sidebar Inputs
-# -------------------------
-monthly_income = st.sidebar.number_input("Monthly Income Required (₹)", value=50000, step=1000)
-inflation = st.sidebar.number_input("Annual Inflation (%)", value=4.0, step=0.1)
-target_xirr = st.sidebar.number_input("Target Equity XIRR (%)", value=12.0, step=0.1)
-volatility = st.sidebar.number_input("Equity Volatility (%)", value=15.0, step=0.1)
-equity_pct = st.sidebar.number_input("Equity Allocation (%)", value=70, step=1)
-arbitrage_return = st.sidebar.number_input("Arbitrage Fund Return (% p.a.)", value=7.0, step=0.1)
-horizon_years = st.sidebar.number_input("Time Horizon (Years)", value=40, step=1)
-starting_age = st.sidebar.number_input("Starting Age", value=60, step=1)
-target_confidence = st.sidebar.number_input("Target Confidence Level (%)", value=90, step=1)
-harvest_threshold = st.sidebar.number_input("Harvest Threshold (%)", value=10.0, step=0.5)
-harvest_rate = st.sidebar.number_input("Harvest Rate (%)", value=5.0, step=0.5)
-
-# -------------------------
-# Monte Carlo Simulation Engine
-# -------------------------
-def run_simulation(initial_capital, params, num_sims=2000, track_income=False, track_corpus=False):
-    monthly_income, inflation, target_xirr, volatility, equity_pct, arbitrage_return, horizon_years, starting_age, harvest_threshold, harvest_rate = params
-    
-    inflation /= 100
-    target_xirr /= 100
-    volatility /= 100
+# ----------------------------
+# Monte Carlo Simulation Function
+# ----------------------------
+def run_simulation(initial_capital, n_sims=5):
+    horizon_months = horizon_years * 12
     equity_allocation = equity_pct / 100
-    arbitrage_return /= 100
-    arbitrage_monthly = (1 + arbitrage_return)**(1/12) - 1
-    horizon_months = int(horizon_years * 12)
-    log_monthly_target = np.log(1 + target_xirr)/12
-    monthly_vol = volatility/np.sqrt(12)
-    harvest_threshold /= 100
-    harvest_rate /= 100
+    arb_allocation = 1 - equity_allocation
+    inflation_monthly = (1 + inflation/100)**(1/12) - 1
+    arb_monthly = (1 + arbitrage_return/100)**(1/12) - 1
+    log_monthly_target = np.log(1 + target_xirr/100)/12
+    monthly_vol = (volatility/100)/np.sqrt(12)
+    harvest_threshold_dec = harvest_threshold/100
+    harvest_rate_dec = harvest_rate/100
     
-    success_count = 0
-    terminal_values = []
-    income_projections = []
-    corpus_projections = []
-
-    for sim in range(num_sims):
+    # Store results
+    all_paths = []
+    for sim in range(n_sims):
         equity = initial_capital * equity_allocation
-        arbitrage = initial_capital * (1 - equity_allocation)
-        current_withdrawal = monthly_income
-        portfolio_failed = False
-        annual_equity_tracker = 1.0
-
-        sim_income_tracker = []
-        sim_corpus_tracker = []
-
-        if track_income:
-            sim_income_tracker.append({'year':0,'age':starting_age,'monthly_income':current_withdrawal,'annual_income':current_withdrawal*12})
-        if track_corpus:
-            sim_corpus_tracker.append({'year':0,'age':starting_age,'equity':equity,'arbitrage':arbitrage,'total':equity+arbitrage})
-
-        for month in range(1,horizon_months+1):
-            norm_rand = np.random.normal()
-            mret = np.exp(log_monthly_target + monthly_vol*norm_rand) - 1
-            equity *= (1 + mret)
-            annual_equity_tracker *= (1 + mret)
-            arbitrage *= (1 + arbitrage_monthly)
-
-            # Withdrawal
-            if arbitrage >= current_withdrawal:
-                arbitrage -= current_withdrawal
+        arb = initial_capital * arb_allocation
+        monthly_withdrawal = monthly_income
+        annual_tracker = 1.0
+        ages = []
+        total_corpus = []
+        equity_list = []
+        arb_list = []
+        
+        for month in range(1, horizon_months+1):
+            # Equity log-normal return
+            z = np.random.normal()
+            m_ret = np.exp(log_monthly_target + monthly_vol * z) - 1
+            equity *= (1 + m_ret)
+            annual_tracker *= (1 + m_ret)
+            
+            # Arbitrage growth
+            arb *= (1 + arb_monthly)
+            
+            # Withdraw
+            if arb >= monthly_withdrawal:
+                arb -= monthly_withdrawal
             else:
-                shortfall = current_withdrawal - arbitrage
-                arbitrage = 0
+                shortfall = monthly_withdrawal - arb
+                arb = 0
                 equity -= shortfall
-
-            if equity + arbitrage <= 0:
-                portfolio_failed = True
+            
+            if equity + arb <= 0:
+                equity, arb = 0, 0
                 break
-
+            
             # Annual adjustments
             if month % 12 == 0:
-                current_withdrawal *= (1 + inflation)
-                if track_income:
-                    sim_income_tracker.append({'year':month//12,'age':starting_age + month//12,'monthly_income':current_withdrawal,'annual_income':current_withdrawal*12})
-                if track_corpus:
-                    sim_corpus_tracker.append({'year':month//12,'age':starting_age + month//12,'equity':equity,'arbitrage':arbitrage,'total':equity+arbitrage})
-                
-                actual_return = annual_equity_tracker - 1
-                if actual_return > harvest_threshold:
-                    transfer = equity * harvest_rate
+                monthly_withdrawal *= (1 + inflation/100)
+                actual_annual_return = annual_tracker - 1
+                if actual_annual_return > harvest_threshold_dec:
+                    transfer = equity * harvest_rate_dec
                     equity -= transfer
-                    arbitrage += transfer
-                annual_equity_tracker = 1.0
-
-        if not portfolio_failed:
-            success_count += 1
-            terminal_values.append(equity + arbitrage)
-            if track_income: income_projections.append(sim_income_tracker)
-            if track_corpus: corpus_projections.append(sim_corpus_tracker)
-        else:
-            terminal_values.append(0)
+                    arb += transfer
+                annual_tracker = 1.0
+            
+            # Store yearly data
+            if month % 12 == 0:
+                age = starting_age + month // 12
+                ages.append(age)
+                equity_list.append(equity)
+                arb_list.append(arb)
+                total_corpus.append(equity + arb)
+        
+        df = pd.DataFrame({
+            "age": ages,
+            "equity": equity_list,
+            "arbitrage": arb_list,
+            "total": total_corpus
+        })
+        all_paths.append(df)
     
-    confidence_level = (success_count / num_sims) * 100
-    successful_values = sorted([v for v in terminal_values if v>0])
-    p25 = successful_values[int(len(successful_values)*0.25)] if successful_values else 0
-    p50 = successful_values[int(len(successful_values)*0.5)] if successful_values else 0
-    p75 = successful_values[int(len(successful_values)*0.75)] if successful_values else 0
+    # Calculate percentiles
+    combined_total = pd.concat([p[['total']] for p in all_paths], axis=1)
+    total_p25 = combined_total.quantile(0.25, axis=1)
+    total_p50 = combined_total.quantile(0.5, axis=1)
+    total_p75 = combined_total.quantile(0.75, axis=1)
+    
+    return all_paths, total_p25, total_p50, total_p75, ages
 
-    return {
-        'confidence': confidence_level,
-        'terminal': {'p25':p25, 'p50':p50, 'p75':p75},
-        'income': income_projections,
-        'corpus': corpus_projections
-    }
+# ----------------------------
+# Run Simulation
+# ----------------------------
+initial_capital = monthly_income * 100  # initial guess
+paths, p25, p50, p75, ages = run_simulation(initial_capital, n_sims=5)
 
-# -------------------------
-# Calculate Required Capital
-# -------------------------
-if st.button("Calculate Required Capital"):
-    st.info("Running Monte Carlo simulation, please wait...")
-    params = (monthly_income, inflation, target_xirr, volatility, equity_pct, arbitrage_return, horizon_years, starting_age, harvest_threshold, harvest_rate)
+# ----------------------------
+# Plotting with Plotly
+# ----------------------------
+fig = go.Figure()
 
-    # Capital sweep to find required capital
-    min_cap = monthly_income*100
-    max_cap = monthly_income*400
-    steps = 15
-    capital_range = []
+# Individual paths
+colors = ['lightgray']*5
+for i, df in enumerate(paths):
+    fig.add_trace(go.Scatter(x=df['age'], y=df['total'], mode='lines', name=f'Path {i+1}', line=dict(color=colors[i], width=1)))
 
-    for i in range(steps+1):
-        cap = min_cap + (max_cap - min_cap)*(i/steps)
-        sim = run_simulation(cap, params, num_sims=500)
-        capital_range.append({'capital':cap/1e7,'confidence':sim['confidence']})
+# Percentile shading
+fig.add_trace(go.Scatter(x=ages + ages[::-1],
+                         y=list(p75) + list(p25[::-1]),
+                         fill='toself',
+                         fillcolor='rgba(0,100,80,0.2)',
+                         line=dict(color='rgba(255,255,255,0)'),
+                         hoverinfo="skip",
+                         showlegend=True,
+                         name='25th-75th Percentile'))
 
-    # Interpolation for required capital
-    req_cap = None
-    for i in range(len(capital_range)-1):
-        curr, nxt = capital_range[i], capital_range[i+1]
-        if curr['confidence'] <= target_confidence <= nxt['confidence']:
-            ratio = (target_confidence - curr['confidence'])/(nxt['confidence'] - curr['confidence'])
-            req_cap = curr['capital'] + ratio*(nxt['capital'] - curr['capital'])
-            break
+# Median line
+fig.add_trace(go.Scatter(x=ages, y=p50, mode='lines', name='Median (P50)', line=dict(color='purple', width=3)))
 
-    st.success(f"Required Capital: ₹ {req_cap:.2f} Crores" if req_cap else "Increase range or adjust parameters")
+fig.update_layout(title="Portfolio Corpus Evolution Over Time",
+                  xaxis_title="Age (Years)",
+                  yaxis_title="Total Corpus (₹)",
+                  template="plotly_white",
+                  height=400)
 
-    # Detailed simulation at required capital
-    if req_cap:
-        det = run_simulation(req_cap*1e7, params, num_sims=1000, track_income=True, track_corpus=True)
+st.plotly_chart(fig, use_container_width=True)
 
-        # Prepare DataFrames for plots
-        years = list(range(horizon_years+1))
+# ----------------------------
+# Display Summary
+# ----------------------------
+starting_total = initial_capital
+median_start = p50.iloc[0]
+p75_end = p75.iloc[-1]
+p25_end = p25.iloc[-1]
 
-        # Income chart
-        income_avg = []
-        for yr in years:
-            vals = [sim[yr]['monthly_income'] for sim in det['income'] if len(sim)>yr]
-            income_avg.append(np.mean(vals) if vals else 0)
-        df_income = pd.DataFrame({'Year':years, 'Age':[starting_age + y for y in years], 'Monthly Income':income_avg})
-
-        # Corpus chart - median + percentiles
-        corpus_data = {'Year':years, 'Age':[starting_age + y for y in years]}
-        for key in ['p25','p50','p75']:
-            corpus_data[f'Total_{key}'] = []
-        for yr in years:
-            totals = [sim[yr]['total']/1e7 for sim in det['corpus'] if len(sim)>yr]
-            totals.sort()
-            n = len(totals)
-            corpus_data['Total_p25'].append(totals[int(0.25*n)] if n>0 else 0)
-            corpus_data['Total_p50'].append(totals[int(0.5*n)] if n>0 else 0)
-            corpus_data['Total_p75'].append(totals[int(0.75*n)] if n>0 else 0)
-        df_corpus = pd.DataFrame(corpus_data)
-
-        # Capital vs confidence chart
-        df_conf = pd.DataFrame(capital_range)
-
-        # -------------------------
-        # Plotting with Plotly in 2x2 grid
-        # -------------------------
-        fig1 = go.Figure()
-        fig1.add_trace(go.Scatter(x=df_corpus['Age'], y=df_corpus['Total_p50'], mode='lines', name='Median', line=dict(color='purple', width=3)))
-        fig1.add_trace(go.Scatter(x=df_corpus['Age'], y=df_corpus['Total_p25'], mode='lines', name='25th %ile', line=dict(color='red', dash='dash')))
-        fig1.add_trace(go.Scatter(x=df_corpus['Age'], y=df_corpus['Total_p75'], mode='lines', name='75th %ile', line=dict(color='green', dash='dash')))
-        fig1.update_layout(title='Portfolio Total Corpus Over Time', xaxis_title='Age', yaxis_title='Total Corpus (₹ Crores)', height=350)
-
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=df_income['Age'], y=df_income['Monthly Income'], mode='lines', name='Monthly Income', line=dict(color='green', width=3)))
-        fig2.update_layout(title='Monthly Income Projection', xaxis_title='Age', yaxis_title='Monthly Income (₹)', height=350)
-
-        fig3 = go.Figure()
-        fig3.add_trace(go.Scatter(x=df_corpus['Age'], y=df_corpus['Total_p50'], mode='lines', name='Median Total', line=dict(color='purple', width=3)))
-        fig3.add_trace(go.Scatter(x=df_corpus['Age'], y=[det['corpus'][0][yr]['equity']/1e7 if len(det['corpus'][0])>yr else 0 for yr in years], mode='lines', name='Equity (Example Path)', line=dict(color='blue', dash='dot')))
-        fig3.add_trace(go.Scatter(x=df_corpus['Age'], y=[det['corpus'][0][yr]['arbitrage']/1e7 if len(det['corpus'][0])>yr else 0 for yr in years], mode='lines', name='Arbitrage (Example Path)', line=dict(color='green', dash='dot')))
-        fig3.update_layout(title='Equity vs Arbitrage Corpus (Example Path)', xaxis_title='Age', yaxis_title='Corpus (₹ Crores)', height=350)
-
-        fig4 = go.Figure()
-        fig4.add_trace(go.Scatter(x=df_conf['capital'], y=df_conf['confidence'], mode='lines+markers', name='Confidence', line=dict(color='blue', width=2)))
-        fig4.add_trace(go.Scatter(x=[req_cap], y=[target_confidence], mode='markers', name='Target', marker=dict(color='red', size=10)))
-        fig4.update_layout(title='Capital vs Confidence Curve', xaxis_title='Initial Capital (₹ Crores)', yaxis_title='Confidence (%)', height=350)
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.plotly_chart(fig1, use_container_width=True)
-        with col2:
-            st.plotly_chart(fig2, use_container_width=True)
-
-        col3, col4 = st.columns(2)
-        with col3:
-            st.plotly_chart(fig3, use_container_width=True)
-        with col4:
-            st.plotly_chart(fig4, use_container_width=True)
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Starting Total", f"₹{starting_total/1e7:.2f} Cr")
+col2.metric(f"Median at Age {starting_age}", f"₹{median_start/1e7:.2f} Cr")
+col3.metric("75th %ile at End", f"₹{p75_end/1e7:.2f} Cr")
+col4.metric("25th %ile at End", f"₹{p25_end/1e7:.2f} Cr")
